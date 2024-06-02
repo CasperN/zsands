@@ -5,13 +5,34 @@ const c = @cImport({
 });
 
 const TICK_TIME = 50;
+const N_SAND_ROWS = 250;
+const N_SAND_COLS = 150;
+const SAND_PX_SIZE = 3;
+const SAND_MARGIN = 50;
+
+const SCREEN_WIDTH = SAND_MARGIN * 2 + N_SAND_COLS * SAND_PX_SIZE;
+const SCREEN_HEIGHT = SAND_MARGIN * 2 + N_SAND_ROWS * SAND_PX_SIZE;
+
+const Color = struct {
+    r: u8,
+    g: u8,
+    b: u8,
+
+    pub fn random(rng: *std.rand.Random) Color {
+        return Color{
+            .r = rng.int(u8),
+            .g = rng.int(u8),
+            .b = rng.int(u8),
+        };
+    }
+};
 
 const Rect = struct {
     x: u32,
     y: u32,
     width: u32,
     height: u32,
-    rgb: [3]u8,
+    color: Color,
 };
 
 const SdlContext = struct {
@@ -32,8 +53,8 @@ const SdlContext = struct {
             title,
             c.SDL_WINDOWPOS_CENTERED,
             c.SDL_WINDOWPOS_CENTERED,
-            680,
-            480,
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
             0,
         );
         if (w == null) {
@@ -55,7 +76,7 @@ const SdlContext = struct {
         _ = c.SDL_RenderClear(self.renderer);
     }
     pub fn draw_rect(self: SdlContext, rect: Rect) void {
-        _ = c.SDL_SetRenderDrawColor(self.renderer, rect.rgb[0], rect.rgb[1], rect.rgb[2], 255);
+        _ = c.SDL_SetRenderDrawColor(self.renderer, rect.color.r, rect.color.g, rect.color.b, 255);
         const sdl_rect = c.SDL_Rect{
             .x = @intCast(rect.x),
             .y = @intCast(rect.y),
@@ -70,31 +91,99 @@ const SdlContext = struct {
     }
 };
 
+const Sand = struct {
+    color: Color,
+};
+
 const GameState = struct {
-    x: u32,
-    y: u32,
+    sands: [N_SAND_ROWS][N_SAND_ROWS]?Sand,
+    rng: *std.rand.Random,
+
+    fn init(rng: *std.rand.Random) GameState {
+        var self = GameState{
+            .sands = undefined,
+            .rng = rng,
+        };
+        // Initialize the undefined sands to null.
+        for (0..N_SAND_ROWS) |i| {
+            for (0..N_SAND_COLS) |j| {
+                self.sands[i][j] = null;
+                if (rng.float(f32) < 0.1) {
+                    // Make random sand.
+                    self.sands[i][j] = Sand{ .color = Color.random(rng) };
+                }
+            }
+        }
+        return self;
+    }
+
+    fn drop_sands(self: *GameState) void {
+        for (1..N_SAND_ROWS) |i| {
+            for (0..N_SAND_COLS) |j| {
+                const current_cell = &self.sands[i][j];
+                const row_below = &self.sands[i - 1];
+                // Try dropping straight down.
+                if (row_below[j] == null) {
+                    row_below[j] = current_cell.*;
+                    current_cell.* = null;
+                    continue;
+                }
+                // Try dropping left.
+                if (j > 0 and row_below[j - 1] == null) {
+                    row_below[j - 1] = current_cell.*;
+                    current_cell.* = null;
+                    continue;
+                }
+                // Try dropping right.
+                if (j < N_SAND_COLS - 1 and row_below[j + 1] == null) {
+                    row_below[j + 1] = current_cell.*;
+                    current_cell.* = null;
+                    continue;
+                }
+            }
+        }
+    }
 
     fn update(self: *GameState) void {
-        self.x = @mod(self.x + 1, 480);
-        self.y = @mod(self.y + 1, 360);
+        // TODO: Spawn a tetmino and control it...
+        // Collision detection, etc.
+        self.drop_sands();
     }
 
     fn draw(self: GameState, sdl: SdlContext) void {
-        sdl.draw_rect(Rect{
-            .x = self.x,
-            .y = self.y,
-            .width = 100,
-            .height = 100,
-            .rgb = .{ 200, 100, 50 },
-        });
+        for (0..N_SAND_ROWS) |i| {
+            for (0..N_SAND_COLS) |j| {
+                const sand = self.sands[i][j];
+                if (sand == null) continue;
+                sdl.draw_rect(Rect{
+                    .x = @intCast(j * SAND_PX_SIZE + SAND_MARGIN),
+                    .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * i),
+                    .width = SAND_PX_SIZE,
+                    .height = SAND_PX_SIZE,
+                    .color = sand.?.color,
+                });
+            }
+        }
     }
 };
 
 pub fn main() !void {
+    // Initialize Random Number Generator.
+    var prng = std.rand.DefaultPrng.init(blk: {
+        var seed: u64 = undefined;
+        try std.posix.getrandom(std.mem.asBytes(&seed));
+        break :blk seed;
+    });
+    var rand = prng.random();
+
+    // Create window.
     const sdl = SdlContext.init("Tetris Sands");
     defer sdl.destroy();
 
-    var game_state = GameState{ .x = 100, .y = 100 };
+    // Initialize the game.
+    var game_state = GameState.init(&rand);
+
+    // Begin the game loop.
     var event = c.SDL_Event{ .type = 0 };
     var next_time = c.SDL_GetTicks64() + TICK_TIME;
     game_loop: while (true) {
