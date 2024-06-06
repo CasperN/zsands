@@ -13,6 +13,8 @@ const SAND_MARGIN = 50;
 const SCREEN_WIDTH = SAND_MARGIN * 2 + N_SAND_COLS * SAND_PX_SIZE;
 const SCREEN_HEIGHT = SAND_MARGIN * 2 + N_SAND_ROWS * SAND_PX_SIZE;
 
+const SAND_PER_BLOCK = 8;
+
 const Color = struct {
     r: u8,
     g: u8,
@@ -115,7 +117,22 @@ const TetminoKind = enum(u8) {
             else => undefined,
         };
     }
+    // Returns the shape of this tetmino, as indices in a 2x4 grid.
+    // Grid: 0 1 2 3
+    //       4 5 6 7
+    fn blocks_filled(self: TetminoKind) [4]u8 {
+        return switch (self) {
+            .L => .{ 4, 5, 6, 2 },
+            .P => .{ 0, 1, 2, 6 },
+            .S => .{ 1, 2, 4, 5 },
+            .Z => .{ 0, 1, 5, 6 },
+            .T => .{ 0, 1, 2, 5 },
+            .I => .{ 0, 1, 2, 3 },
+            .O => .{ 1, 2, 5, 6 },
+        };
+    }
 };
+
 const Rotation = enum(u8) {
     R0,
     R90,
@@ -129,6 +146,30 @@ const Rotation = enum(u8) {
             2 => Rotation.R270,
             3 => Rotation.R180,
             else => undefined,
+        };
+    }
+    fn rotate_offsets(self: Rotation, dx: isize, dy: isize) struct { isize, isize } {
+        return switch (self) {
+            .R0 => .{ dx, dy },
+            .R90 => .{ dy, dx },
+            .R180 => .{ -dx, -dy },
+            .R270 => .{ -dy, -dx },
+        };
+    }
+    fn rotate_clockwise(self: *Rotation) void {
+        self.* = switch (self.*) {
+            .R0 => Rotation.R90,
+            .R90 => Rotation.R180,
+            .R180 => Rotation.R270,
+            .R270 => Rotation.R0,
+        };
+    }
+    fn rotate_counter_clockwise(self: *Rotation) void {
+        self.* = switch (self.*) {
+            .R0 => Rotation.R270,
+            .R90 => Rotation.R0,
+            .R180 => Rotation.R90,
+            .R270 => Rotation.R180,
         };
     }
 };
@@ -149,28 +190,35 @@ const Tetmino = struct {
             .column = N_SAND_COLS / 2,
         };
     }
+    fn shift(self: *Tetmino, left: bool) void {
+        _ = self;
+        _ = left;
+        // TODO: Try shifting tetmino, avoiding collisions with the wall or
+        // sand.
+        // var furthest_left = self.column;
+        // var furthest_right = self.column;
+        // for (0..8) |block| {
+        //     const d_row = if (block < 4) 0 else SAND_PER_BLOCK;
+        //     const d_cols = @mod(block, 4) * SAND_PER_BLOCK;
+
+        // }
+    }
+
     fn draw(self: Tetmino, sdl: SdlContext) void {
         // Decompose a TetminoKind into 8 blocks. Each is a cell.
-        const is_block_filled: [8]bool = switch (self.kind) {
-            .L => .{ false, false, true, false, true, true, true, false },
-            .P => .{ true, true, true, false, false, false, true, false },
-            .S => .{ false, true, true, false, true, true, false, false },
-            .Z => .{ true, true, false, false, false, true, true, false },
-            .T => .{ false, true, false, false, true, true, true, false },
-            .I => .{ true, true, true, true, false, false, false, false },
-            .O => .{ true, true, false, false, true, true, false, false },
-        };
-        const BLOCK_CELLS: usize = 8;
-        for (0..8) |block| {
-            if (!is_block_filled[block]) continue;
-            const d_row = if (block < 4) 0 else BLOCK_CELLS;
-            const d_cols = @mod(block, 4) * BLOCK_CELLS;
-            const column = self.column + d_cols;
-            const row = self.row + d_row;
+        for (self.kind.blocks_filled()) |block| {
+            // TODO: This would be more succinct with a Vec2 type.
+            var d_row: isize = if (block < 4) 0 else SAND_PER_BLOCK;
+            var d_cols: isize = @mod(block, 4) * SAND_PER_BLOCK;
+            const offsets = self.rotation.rotate_offsets(d_row, d_cols);
+            d_row = offsets[0];
+            d_cols = offsets[1];
+            const column: usize = @intCast(@as(isize, @intCast(self.column)) + d_cols);
+            const row: usize = @intCast(@as(isize, @intCast(self.row)) + d_row);
             sdl.draw_rect(Rect{
                 .color = self.color,
-                .height = BLOCK_CELLS * SAND_PX_SIZE,
-                .width = BLOCK_CELLS * SAND_PX_SIZE,
+                .height = SAND_PER_BLOCK * SAND_PX_SIZE,
+                .width = SAND_PER_BLOCK * SAND_PX_SIZE,
                 .x = @intCast(column * SAND_PX_SIZE + SAND_MARGIN),
                 .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * row),
             });
@@ -248,8 +296,16 @@ const GameState = struct {
         }
     }
 
-    fn update(self: *GameState) void {
-        // TODO: Spawn a tetmino and control it...
+    fn update(self: *GameState, controller: Controller) void {
+        if (self.live_tetmino != null) {
+            const tet = &self.live_tetmino.?;
+            if (controller.clockwise and !controller.counter_clockwise) {
+                tet.rotation.rotate_clockwise();
+            }
+            if (controller.counter_clockwise and !controller.clockwise) {
+                tet.rotation.rotate_counter_clockwise();
+            }
+        }
         // Collision detection, etc.
         self.drop_sands();
     }
@@ -303,6 +359,8 @@ const Controller = struct {
     down: bool,
     left: bool,
     right: bool,
+    clockwise: bool,
+    counter_clockwise: bool,
     pause: RateLimitedButton,
     action: RateLimitedButton,
     quit: bool,
@@ -313,6 +371,8 @@ const Controller = struct {
             .down = false,
             .left = false,
             .right = false,
+            .clockwise = false,
+            .counter_clockwise = false,
             .pause = RateLimitedButton.init(),
             .action = RateLimitedButton.init(),
             .quit = false,
@@ -332,6 +392,8 @@ const Controller = struct {
                         c.SDLK_s => self.down = is_pressed,
                         c.SDLK_a => self.left = is_pressed,
                         c.SDLK_d => self.right = is_pressed,
+                        c.SDLK_LSHIFT => self.counter_clockwise = is_pressed,
+                        c.SDLK_RSHIFT => self.clockwise = is_pressed,
                         c.SDLK_ESCAPE => self.pause.press(now),
                         c.SDLK_SPACE => self.action.press(now),
                         else => {},
@@ -379,7 +441,7 @@ pub fn main() !void {
         }
 
         if (!is_paused) {
-            game_state.update();
+            game_state.update(controller);
         }
 
         sdl.clear_screen();
