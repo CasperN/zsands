@@ -4,7 +4,9 @@ const c = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-const TICK_TIME = 50;
+const UPDATE_INTERVAL = 50;
+const INPUT_INTERVAL = 100;
+
 const N_SAND_ROWS = 250;
 const N_SAND_COLS = 150;
 const SAND_PX_SIZE = 3;
@@ -296,7 +298,10 @@ const GameState = struct {
         }
     }
 
-    fn update(self: *GameState, controller: Controller) void {
+    fn apply_controls(self: *GameState, controller: Controller) void {
+        if (controller.action) {
+            self.create_tetmino();
+        }
         if (self.live_tetmino != null) {
             const tet = &self.live_tetmino.?;
             if (controller.clockwise and !controller.counter_clockwise) {
@@ -307,7 +312,6 @@ const GameState = struct {
             }
         }
         // Collision detection, etc.
-        self.drop_sands();
     }
 
     fn draw(self: GameState, sdl: SdlContext) void {
@@ -331,29 +335,6 @@ const GameState = struct {
     }
 };
 
-const BUTTON_RATE_LIMIT = 250; // milliseconds.
-
-const RateLimitedButton = struct {
-    last_press_time: u64,
-    last_handled_time: u64,
-
-    fn init() RateLimitedButton {
-        return .{ .last_press_time = 0, .last_handled_time = 0 };
-    }
-
-    fn press(self: *RateLimitedButton, now: u64) void {
-        self.last_press_time = now;
-    }
-
-    fn should_handle(self: *RateLimitedButton, now: u64) bool {
-        if (self.last_handled_time + BUTTON_RATE_LIMIT < self.last_press_time) {
-            self.last_handled_time = now;
-            return true;
-        }
-        return false;
-    }
-};
-
 const Controller = struct {
     up: bool,
     down: bool,
@@ -361,8 +342,8 @@ const Controller = struct {
     right: bool,
     clockwise: bool,
     counter_clockwise: bool,
-    pause: RateLimitedButton,
-    action: RateLimitedButton,
+    pause: bool,
+    action: bool,
     quit: bool,
 
     fn init() Controller {
@@ -373,10 +354,14 @@ const Controller = struct {
             .right = false,
             .clockwise = false,
             .counter_clockwise = false,
-            .pause = RateLimitedButton.init(),
-            .action = RateLimitedButton.init(),
+            .pause = false,
+            .action = false,
             .quit = false,
         };
+    }
+
+    fn reset(self: *Controller) void {
+        self.* = Controller.init();
     }
 
     fn poll_sdl_events(self: *Controller) void {
@@ -384,18 +369,16 @@ const Controller = struct {
         while (c.SDL_PollEvent(&event) != 0) {
             switch (event.type) {
                 c.SDL_QUIT => self.quit = true,
-                c.SDL_KEYDOWN, c.SDL_KEYUP => {
-                    const is_pressed = event.type == c.SDL_KEYDOWN;
-                    const now = c.SDL_GetTicks64();
+                c.SDL_KEYDOWN => {
                     switch (event.key.keysym.sym) {
-                        c.SDLK_w => self.up = is_pressed,
-                        c.SDLK_s => self.down = is_pressed,
-                        c.SDLK_a => self.left = is_pressed,
-                        c.SDLK_d => self.right = is_pressed,
-                        c.SDLK_LSHIFT => self.counter_clockwise = is_pressed,
-                        c.SDLK_RSHIFT => self.clockwise = is_pressed,
-                        c.SDLK_ESCAPE => self.pause.press(now),
-                        c.SDLK_SPACE => self.action.press(now),
+                        c.SDLK_w => self.up = true,
+                        c.SDLK_s => self.down = true,
+                        c.SDLK_a => self.left = true,
+                        c.SDLK_d => self.right = true,
+                        c.SDLK_LSHIFT => self.counter_clockwise = true,
+                        c.SDLK_RSHIFT => self.clockwise = true,
+                        c.SDLK_ESCAPE => self.pause = true,
+                        c.SDLK_SPACE => self.action = true,
                         else => {},
                     }
                 },
@@ -425,35 +408,40 @@ pub fn main() !void {
     var is_paused = false;
 
     // Begin the game loop.
-    var next_time = c.SDL_GetTicks64() + TICK_TIME;
+    var now = c.SDL_GetTicks64();
+    var next_update_time = now;
+    var next_input_time = now;
     while (true) {
-        // First, handle events...
-        controller.poll_sdl_events();
-        if (controller.quit) break;
+        now = c.SDL_GetTicks64();
 
-        var now = c.SDL_GetTicks64();
+        if (now >= next_input_time) {
+            controller.poll_sdl_events();
+            defer controller.reset();
+            next_input_time += INPUT_INTERVAL;
 
-        if (controller.pause.should_handle(now)) {
-            is_paused = !is_paused;
+            if (controller.quit) break;
+            if (controller.pause) is_paused = !is_paused;
+
+            game_state.apply_controls(controller);
         }
-        if (controller.action.should_handle(now)) {
-            game_state.create_tetmino();
-        }
 
-        if (!is_paused) {
-            game_state.update(controller);
+        if (now >= next_update_time) {
+            next_update_time += UPDATE_INTERVAL;
+
+            if (!is_paused) {
+                game_state.drop_sands();
+            }
         }
 
         sdl.clear_screen();
         game_state.draw(sdl);
         sdl.present();
 
-        // Sleep until next frame.
+        // Sleep until next action.
         now = c.SDL_GetTicks64();
+        const next_time = @min(next_input_time, next_update_time);
         if (now < next_time) {
-            const remaining = next_time - now;
-            c.SDL_Delay(@intCast(remaining));
+            c.SDL_Delay(@intCast(next_time - now));
         }
-        next_time += TICK_TIME;
     }
 }
