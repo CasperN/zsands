@@ -4,17 +4,19 @@ const c = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
+// Milliseconds between updates.
 const UPDATE_INTERVAL = 50;
 const INPUT_INTERVAL = 100;
 
+// Screen configuration for the main tetris board.
 const N_SAND_ROWS = 250;
 const N_SAND_COLS = 150;
 const SAND_PX_SIZE = 3;
 const SAND_MARGIN = 50;
-
 const SCREEN_WIDTH = SAND_MARGIN * 2 + N_SAND_COLS * SAND_PX_SIZE;
 const SCREEN_HEIGHT = SAND_MARGIN * 2 + N_SAND_ROWS * SAND_PX_SIZE;
 
+// Other configuration.
 const SAND_PER_BLOCK = 8;
 
 const Color = struct {
