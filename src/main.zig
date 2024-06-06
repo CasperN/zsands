@@ -117,6 +117,20 @@ const GameState = struct {
         return self;
     }
 
+    fn create_tetmino(self: *GameState) void {
+        const left = self.rng.intRangeAtMost(usize, 0, N_SAND_COLS - 10);
+        const color = Color.random(self.rng);
+        for (0..10) |di| {
+            for (0..10) |dj| {
+                const row = N_SAND_ROWS - 1 - di;
+                const col = left + dj;
+                self.sands[row][col] = Sand{
+                    .color = color,
+                };
+            }
+        }
+    }
+
     fn drop_sands(self: *GameState) void {
         for (1..N_SAND_ROWS) |i| {
             for (0..N_SAND_COLS) |j| {
@@ -167,6 +181,74 @@ const GameState = struct {
     }
 };
 
+const BUTTON_RATE_LIMIT = 250; // milliseconds.
+
+const RateLimitedButton = struct {
+    last_press_time: u64,
+    last_handled_time: u64,
+
+    fn init() RateLimitedButton {
+        return .{ .last_press_time = 0, .last_handled_time = 0 };
+    }
+
+    fn press(self: *RateLimitedButton, now: u64) void {
+        self.last_press_time = now;
+    }
+
+    fn should_handle(self: *RateLimitedButton, now: u64) bool {
+        if (self.last_handled_time + BUTTON_RATE_LIMIT < self.last_press_time) {
+            self.last_handled_time = now;
+            return true;
+        }
+        return false;
+    }
+};
+
+const Controller = struct {
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    pause: RateLimitedButton,
+    action: RateLimitedButton,
+    quit: bool,
+
+    fn init() Controller {
+        return Controller{
+            .up = false,
+            .down = false,
+            .left = false,
+            .right = false,
+            .pause = RateLimitedButton.init(),
+            .action = RateLimitedButton.init(),
+            .quit = false,
+        };
+    }
+
+    fn poll_sdl_events(self: *Controller) void {
+        var event = c.SDL_Event{ .type = 0 };
+        while (c.SDL_PollEvent(&event) != 0) {
+            switch (event.type) {
+                c.SDL_QUIT => self.quit = true,
+                c.SDL_KEYDOWN, c.SDL_KEYUP => {
+                    const is_pressed = event.type == c.SDL_KEYDOWN;
+                    const now = c.SDL_GetTicks64();
+                    switch (event.key.keysym.sym) {
+                        c.SDLK_w => self.up = is_pressed,
+                        c.SDLK_s => self.down = is_pressed,
+                        c.SDLK_a => self.left = is_pressed,
+                        c.SDLK_d => self.right = is_pressed,
+                        c.SDLK_ESCAPE => self.pause.press(now),
+                        c.SDLK_SPACE => self.action.press(now),
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+};
+
 pub fn main() !void {
     // Initialize Random Number Generator.
     var prng = std.rand.DefaultPrng.init(blk: {
@@ -182,23 +264,36 @@ pub fn main() !void {
 
     // Initialize the game.
     var game_state = GameState.init(&rand);
+    var controller = Controller.init();
+
+    var is_paused = false;
 
     // Begin the game loop.
-    var event = c.SDL_Event{ .type = 0 };
     var next_time = c.SDL_GetTicks64() + TICK_TIME;
-    game_loop: while (true) {
+    while (true) {
         // First, handle events...
-        while (c.SDL_PollEvent(&event) != 0) {
-            if (event.type == c.SDL_QUIT) break :game_loop;
+        controller.poll_sdl_events();
+        if (controller.quit) break;
+
+        var now = c.SDL_GetTicks64();
+
+        if (controller.pause.should_handle(now)) {
+            is_paused = !is_paused;
+        }
+        if (controller.action.should_handle(now)) {
+            game_state.create_tetmino();
         }
 
-        game_state.update();
+        if (!is_paused) {
+            game_state.update();
+        }
+
         sdl.clear_screen();
         game_state.draw(sdl);
         sdl.present();
 
         // Sleep until next frame.
-        const now = c.SDL_GetTicks64();
+        now = c.SDL_GetTicks64();
         if (now < next_time) {
             const remaining = next_time - now;
             c.SDL_Delay(@intCast(remaining));
