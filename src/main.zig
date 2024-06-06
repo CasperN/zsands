@@ -95,13 +95,98 @@ const Sand = struct {
     color: Color,
 };
 
+const TetminoKind = enum(u8) {
+    L,
+    P,
+    S,
+    Z,
+    T,
+    I,
+    O,
+    fn random(rng: *std.rand.Random) TetminoKind {
+        return switch (rng.intRangeLessThan(u8, 0, 7)) {
+            0 => TetminoKind.L,
+            1 => TetminoKind.P,
+            2 => TetminoKind.S,
+            3 => TetminoKind.Z,
+            4 => TetminoKind.T,
+            5 => TetminoKind.I,
+            6 => TetminoKind.O,
+            else => undefined,
+        };
+    }
+};
+const Rotation = enum(u8) {
+    R0,
+    R90,
+    R180,
+    R270,
+
+    fn random(rng: *std.rand.Random) Rotation {
+        return switch (rng.intRangeLessThan(u8, 0, 3)) {
+            0 => Rotation.R0,
+            1 => Rotation.R90,
+            2 => Rotation.R270,
+            3 => Rotation.R180,
+            else => undefined,
+        };
+    }
+};
+
+const Tetmino = struct {
+    color: Color,
+    kind: TetminoKind,
+    rotation: Rotation,
+    column: usize,
+    row: usize,
+
+    fn init(rng: *std.rand.Random) Tetmino {
+        return .{
+            .color = Color.random(rng),
+            .kind = TetminoKind.random(rng),
+            .rotation = Rotation.random(rng),
+            .row = N_SAND_ROWS - 10,
+            .column = N_SAND_COLS / 2,
+        };
+    }
+    fn draw(self: Tetmino, sdl: SdlContext) void {
+        // Decompose a TetminoKind into 8 blocks. Each is a cell.
+        const is_block_filled: [8]bool = switch (self.kind) {
+            .L => .{ false, false, true, false, true, true, true, false },
+            .P => .{ true, true, true, false, false, false, true, false },
+            .S => .{ false, true, true, false, true, true, false, false },
+            .Z => .{ true, true, false, false, false, true, true, false },
+            .T => .{ false, true, false, false, true, true, true, false },
+            .I => .{ true, true, true, true, false, false, false, false },
+            .O => .{ true, true, false, false, true, true, false, false },
+        };
+        const BLOCK_CELLS: usize = 8;
+        for (0..8) |block| {
+            if (!is_block_filled[block]) continue;
+            const d_row = if (block < 4) 0 else BLOCK_CELLS;
+            const d_cols = @mod(block, 4) * BLOCK_CELLS;
+            const column = self.column + d_cols;
+            const row = self.row + d_row;
+            sdl.draw_rect(Rect{
+                .color = self.color,
+                .height = BLOCK_CELLS * SAND_PX_SIZE,
+                .width = BLOCK_CELLS * SAND_PX_SIZE,
+                .x = @intCast(column * SAND_PX_SIZE + SAND_MARGIN),
+                .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * row),
+            });
+        }
+    }
+};
+
 const GameState = struct {
     sands: [N_SAND_ROWS][N_SAND_ROWS]?Sand,
+    live_tetmino: ?Tetmino,
     rng: *std.rand.Random,
 
     fn init(rng: *std.rand.Random) GameState {
         var self = GameState{
             .sands = undefined,
+            .live_tetmino = null,
             .rng = rng,
         };
         // Initialize the undefined sands to null.
@@ -118,17 +203,22 @@ const GameState = struct {
     }
 
     fn create_tetmino(self: *GameState) void {
-        const left = self.rng.intRangeAtMost(usize, 0, N_SAND_COLS - 10);
-        const color = Color.random(self.rng);
-        for (0..10) |di| {
-            for (0..10) |dj| {
-                const row = N_SAND_ROWS - 1 - di;
-                const col = left + dj;
-                self.sands[row][col] = Sand{
-                    .color = color,
-                };
-            }
+        if (self.live_tetmino == null) {
+            self.live_tetmino = Tetmino.init(self.rng);
+        } else {
+            self.live_tetmino = null;
         }
+        // const left = self.rng.intRangeLessThan(usize, 0, N_SAND_COLS - 10);
+        // const color = Color.random(self.rng);
+        // for (0..10) |di| {
+        //     for (0..10) |dj| {
+        //         const row = N_SAND_ROWS - 1 - di;
+        //         const col = left + dj;
+        //         self.sands[row][col] = Sand{
+        //             .color = color,
+        //         };
+        //     }
+        // }
     }
 
     fn drop_sands(self: *GameState) void {
@@ -165,6 +255,10 @@ const GameState = struct {
     }
 
     fn draw(self: GameState, sdl: SdlContext) void {
+        if (self.live_tetmino != null) {
+            self.live_tetmino.?.draw(sdl);
+        }
+
         for (0..N_SAND_ROWS) |i| {
             for (0..N_SAND_COLS) |j| {
                 const sand = self.sands[i][j];
