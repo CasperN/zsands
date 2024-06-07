@@ -6,6 +6,7 @@ const c = @cImport({
 
 // Milliseconds between updates.
 const UPDATE_INTERVAL = 50;
+// TODO: Separate low and high frequency input intervals, e.g. pause vs rotate.
 const INPUT_INTERVAL = 100;
 
 // Screen configuration for the main tetris board.
@@ -31,6 +32,11 @@ const Color = struct {
             .b = rng.int(u8),
         };
     }
+};
+
+const SandCoordinate = struct {
+    row: isize,
+    col: isize,
 };
 
 const Rect = struct {
@@ -182,8 +188,8 @@ const Tetmino = struct {
     color: Color,
     kind: TetminoKind,
     rotation: Rotation,
-    column: usize,
-    row: usize,
+    column: isize,
+    row: isize,
 
     fn init(rng: *std.rand.Random) Tetmino {
         return .{
@@ -195,30 +201,52 @@ const Tetmino = struct {
         };
     }
     fn shift(self: *Tetmino, left: bool) void {
-        _ = self;
-        _ = left;
-        // TODO: Try shifting tetmino, avoiding collisions with the wall or
-        // sand.
-        // var furthest_left = self.column;
-        // var furthest_right = self.column;
-        // for (0..8) |block| {
-        //     const d_row = if (block < 4) 0 else SAND_PER_BLOCK;
-        //     const d_cols = @mod(block, 4) * SAND_PER_BLOCK;
+        self.column += if (left) -1 else 1;
+        self.correct_horizontal_position();
+    }
+    fn rotate(self: *Tetmino, clockwise: bool) void {
+        if (clockwise) {
+            self.rotation.rotate_clockwise();
+        } else {
+            self.rotation.rotate_counter_clockwise();
+        }
+        self.correct_horizontal_position();
+    }
+    // Returns the top left sand-pixel coordinate of a tetris block.
+    fn block_bounds(self: Tetmino, block: u8) SandCoordinate {
+        std.debug.assert(block < 8);
 
-        // }
+        var d_row: isize = if (block < 4) 0 else SAND_PER_BLOCK;
+        var d_cols: isize = @mod(block, 4) * SAND_PER_BLOCK;
+        const offsets = self.rotation.rotate_offsets(d_row, d_cols);
+        d_row = offsets[0];
+        d_cols = offsets[1];
+        const column = @as(isize, @intCast(self.column)) + d_cols;
+        const row = @as(isize, @intCast(self.row)) + d_row;
+        return .{ .row = row, .col = column };
+    }
+
+    fn correct_horizontal_position(self: *Tetmino) void {
+        var beyond_right_edge: isize = 0;
+        var beyond_left_edge: isize = 0;
+        for (self.kind.blocks_filled()) |block| {
+            const column = self.block_bounds(block).col;
+            beyond_right_edge = @max(beyond_left_edge, column + SAND_PER_BLOCK - N_SAND_COLS + 1);
+            beyond_left_edge = @min(0, column);
+        }
+        // You can only be beyond one edge at a time, logically.
+        std.debug.assert((beyond_left_edge == 0) or (beyond_right_edge == 0));
+
+        self.column -= beyond_left_edge + beyond_right_edge;
     }
 
     fn draw(self: Tetmino, sdl: SdlContext) void {
         // Decompose a TetminoKind into 8 blocks. Each is a cell.
         for (self.kind.blocks_filled()) |block| {
             // TODO: This would be more succinct with a Vec2 type.
-            var d_row: isize = if (block < 4) 0 else SAND_PER_BLOCK;
-            var d_cols: isize = @mod(block, 4) * SAND_PER_BLOCK;
-            const offsets = self.rotation.rotate_offsets(d_row, d_cols);
-            d_row = offsets[0];
-            d_cols = offsets[1];
-            const column: usize = @intCast(@as(isize, @intCast(self.column)) + d_cols);
-            const row: usize = @intCast(@as(isize, @intCast(self.row)) + d_row);
+            const top_left = self.block_bounds(block);
+            const column: usize = @intCast(top_left.col);
+            const row: usize = @intCast(top_left.row);
             sdl.draw_rect(Rect{
                 .color = self.color,
                 .height = SAND_PER_BLOCK * SAND_PX_SIZE,
@@ -304,15 +332,19 @@ const GameState = struct {
         if (controller.action) {
             self.create_tetmino();
         }
+        // Control the live tetmino.
         if (self.live_tetmino != null) {
-            const tet = &self.live_tetmino.?;
-            if (controller.clockwise and !controller.counter_clockwise) {
-                tet.rotation.rotate_clockwise();
+            const tetmino = &self.live_tetmino.?;
+
+            if (controller.left != controller.right) {
+                tetmino.shift(controller.left);
             }
-            if (controller.counter_clockwise and !controller.clockwise) {
-                tet.rotation.rotate_counter_clockwise();
+            if (controller.clockwise != controller.counter_clockwise) {
+                tetmino.rotate(controller.clockwise);
             }
         }
+        // TODO: Once against a wall you can rotate to clip out of bounds.
+        // After rotating we should bring you back in bounds.
         // Collision detection, etc.
     }
 
