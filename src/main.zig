@@ -34,11 +34,6 @@ const Color = struct {
     }
 };
 
-const SandCoordinate = struct {
-    row: isize,
-    col: isize,
-};
-
 const Rect = struct {
     x: u32,
     y: u32,
@@ -98,16 +93,29 @@ const SdlContext = struct {
         _ = c.SDL_RenderFillRect(self.renderer, &sdl_rect);
     }
 
+    // Draws a sand cell given its coordiantes and color.
+    pub fn draw_sand(self: SdlContext, sand: SandIndex, color: Color) void {
+        self.draw_rect(Rect{
+            .x = @intCast(sand.x * SAND_PX_SIZE + SAND_MARGIN),
+            .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * sand.y),
+            .width = SAND_PX_SIZE,
+            .height = SAND_PX_SIZE,
+            .color = color,
+        });
+    }
+
     pub fn present(self: SdlContext) void {
         _ = c.SDL_RenderPresent(self.renderer);
     }
 };
 
-const Sand = struct {
-    color: Color,
-};
+const Sand = struct { color: Color };
 
-const BlockCenter = struct { x: isize, y: isize };
+// Possibly out of bounds coordinate in the sand grid.
+const SandCoord = struct { x: isize, y: isize };
+
+// In-bounds coordinates on the sand grid.
+const SandIndex = struct { x: usize, y: usize };
 
 const TetminoKind = enum(u8) {
     L,
@@ -131,7 +139,7 @@ const TetminoKind = enum(u8) {
         };
     }
     // Relative coordinate
-    fn block_offsets(self: TetminoKind) [4]BlockCenter {
+    fn block_offsets(self: TetminoKind) [4]SandCoord {
         const half_block = SAND_PER_BLOCK / 2;
         return switch (self) {
             .L => .{
@@ -195,7 +203,7 @@ const Rotation = enum(u8) {
             else => undefined,
         };
     }
-    fn rotate_offsets(self: Rotation, coord: BlockCenter) BlockCenter {
+    fn rotate_offsets(self: Rotation, coord: SandCoord) SandCoord {
         return switch (self) {
             .R0 => .{ .x = coord.x, .y = coord.y },
             .R90 => .{ .x = -coord.y, .y = coord.x },
@@ -221,6 +229,8 @@ const Rotation = enum(u8) {
     }
 };
 
+const TetminoSandCoordinates = [4 * SAND_PER_BLOCK * SAND_PER_BLOCK]SandIndex;
+
 const Tetmino = struct {
     color: Color,
     kind: TetminoKind,
@@ -238,7 +248,7 @@ const Tetmino = struct {
         };
     }
     // Returns the 4 block_centers that make up the tetmino.
-    fn block_centers(self: Tetmino) [4]BlockCenter {
+    fn block_centers(self: Tetmino) [4]SandCoord {
         var result = self.kind.block_offsets();
         // Convert the block offsets into absolute coordinates on the sand grid.
         for (0..4) |i| {
@@ -281,34 +291,47 @@ const Tetmino = struct {
         }
     }
 
-    fn draw(self: Tetmino, sdl: SdlContext) void {
+    fn as_sand_coordinates(self: Tetmino) TetminoSandCoordinates {
+        var result: TetminoSandCoordinates = undefined;
+        var written: usize = 0;
         const half_side_len = SAND_PER_BLOCK / 2;
-        for (self.block_centers()) |block_center| {
-            // Get the top left.
-            const x: u32 = @intCast(block_center.x - half_side_len);
-            const y: u32 = @intCast(block_center.y - half_side_len);
-            // Remap from sand-grid coordinate to pixel coordinate.
-            sdl.draw_rect(Rect{
-                .color = self.color,
-                .height = SAND_PER_BLOCK * SAND_PX_SIZE,
-                .width = SAND_PER_BLOCK * SAND_PX_SIZE,
-                .x = x * SAND_PX_SIZE + SAND_MARGIN,
-                .y = SCREEN_HEIGHT - SAND_MARGIN - y * SAND_PX_SIZE,
-            });
+        for (self.block_centers()) |coord| {
+            const left: usize = @intCast(coord.x - half_side_len);
+            const right: usize = @intCast(coord.x + half_side_len);
+            const bottom: usize = @intCast(coord.y - half_side_len);
+            const top: usize = @intCast(coord.y + half_side_len);
+            for (left..right) |x| {
+                for (bottom..top) |y| {
+                    result[written] = .{ .x = x, .y = y };
+                    written += 1;
+                }
+            }
+        }
+        return result;
+    }
+
+    fn draw(self: Tetmino, sdl: SdlContext) void {
+        // TODO: We could draw just 4 rectangles if we drew them at the block level instead of
+        // at the sand level, however previously there was a visual stutter due to subtle
+        // implementation differences, so now this function relies on `as_sand_coordinates`.
+        for (self.as_sand_coordinates()) |coord| {
+            sdl.draw_sand(coord, self.color);
         }
     }
 };
 
 const GameState = struct {
-    sands: [N_SAND_ROWS][N_SAND_ROWS]?Sand,
+    sands: [N_SAND_ROWS][N_SAND_COLS]?Sand,
     live_tetmino: ?Tetmino,
     rng: *std.rand.Random,
+    game_over: bool,
 
     fn init(rng: *std.rand.Random) GameState {
         var self = GameState{
             .sands = undefined,
             .live_tetmino = null,
             .rng = rng,
+            .game_over = false,
         };
         // Initialize the undefined sands to null.
         for (0..N_SAND_ROWS) |i| {
@@ -343,6 +366,7 @@ const GameState = struct {
     }
 
     fn drop_sands(self: *GameState) void {
+        if (self.game_over) return;
         for (1..N_SAND_ROWS) |i| {
             for (0..N_SAND_COLS) |j| {
                 const current_cell = &self.sands[i][j];
@@ -369,7 +393,67 @@ const GameState = struct {
         }
     }
 
+    fn convert_live_tetmino_to_sand(self: *GameState) void {
+        std.debug.assert(self.live_tetmino != null);
+        for (self.live_tetmino.?.as_sand_coordinates()) |coord| {
+            if (coord.y >= N_SAND_ROWS) {
+                self.game_over = true;
+                return;
+            }
+
+            self.sands[coord.y][coord.x] = Sand{ .color = self.live_tetmino.?.color };
+        }
+        self.live_tetmino = null;
+    }
+
+    fn live_tetmino_touches_sand_or_floor(self: GameState) bool {
+        if (self.live_tetmino == null) return false;
+        const tetmino = self.live_tetmino.?;
+        for (tetmino.block_centers()) |coord| {
+            // Consider the outline of a block, 1 sand cell beyond the edge.
+            const outline_dist: isize = SAND_PER_BLOCK / 2 + 1;
+            const left: usize = @intCast(@max(coord.x - outline_dist, 0));
+            const right: usize = @intCast(@min(coord.x + outline_dist, N_SAND_COLS - 1));
+            const bottom: usize = @intCast(@max(coord.y - outline_dist, 0));
+            const top: usize = @intCast(@min(coord.y + outline_dist, N_SAND_ROWS - 1));
+
+            // Turn to sand if the block is against the floor.
+            if (bottom == 0) {
+                return true;
+            }
+            // Turn to sand if the block is next to sand.
+            for (left..right) |x| {
+                if ((self.sands[bottom][x] != null) or (self.sands[top][x] != null)) {
+                    return true;
+                }
+            }
+            for (bottom..top) |y| {
+                if ((self.sands[y][left] != null) or (self.sands[y][right] != null)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn drop_tetmino(self: *GameState) void {
+        if (self.live_tetmino == null) return;
+        const tetmino = &self.live_tetmino.?;
+        tetmino.row -= 1;
+        if (self.live_tetmino_touches_sand_or_floor()) {
+            return self.convert_live_tetmino_to_sand();
+        }
+    }
+
     fn apply_controls(self: *GameState, controller: Controller) void {
+        if (self.game_over) {
+            if (controller.pause) {
+                // Reset the game.
+                self.* = GameState.init(self.rng);
+            }
+            return;
+        }
+
         if (controller.action) {
             self.create_tetmino();
         }
@@ -383,6 +467,7 @@ const GameState = struct {
             if (controller.clockwise != controller.counter_clockwise) {
                 tetmino.rotate(controller.clockwise);
             }
+            self.drop_tetmino();
         }
         // TODO: Once against a wall you can rotate to clip out of bounds.
         // After rotating we should bring you back in bounds.
