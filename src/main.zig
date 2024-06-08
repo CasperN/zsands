@@ -7,7 +7,7 @@ const c = @cImport({
 // Milliseconds between updates.
 const UPDATE_INTERVAL = 50;
 // TODO: Separate low and high frequency input intervals, e.g. pause vs rotate.
-const INPUT_INTERVAL = 100;
+const INPUT_INTERVAL = 40;
 
 // Screen configuration for the main tetris board.
 const N_SAND_ROWS = 250;
@@ -107,6 +107,8 @@ const Sand = struct {
     color: Color,
 };
 
+const BlockCenter = struct { x: isize, y: isize };
+
 const TetminoKind = enum(u8) {
     L,
     P,
@@ -115,6 +117,7 @@ const TetminoKind = enum(u8) {
     T,
     I,
     O,
+    // Returns a random tetmino kind.
     fn random(rng: *std.rand.Random) TetminoKind {
         return switch (rng.intRangeLessThan(u8, 0, 7)) {
             0 => TetminoKind.L,
@@ -127,18 +130,52 @@ const TetminoKind = enum(u8) {
             else => undefined,
         };
     }
-    // Returns the shape of this tetmino, as indices in a 2x4 grid.
-    // Grid: 0 1 2 3
-    //       4 5 6 7
-    fn blocks_filled(self: TetminoKind) [4]u8 {
+    // Relative coordinate
+    fn block_offsets(self: TetminoKind) [4]BlockCenter {
+        const half_block = SAND_PER_BLOCK / 2;
         return switch (self) {
-            .L => .{ 4, 5, 6, 2 },
-            .P => .{ 0, 1, 2, 6 },
-            .S => .{ 1, 2, 4, 5 },
-            .Z => .{ 0, 1, 5, 6 },
-            .T => .{ 0, 1, 2, 5 },
-            .I => .{ 0, 1, 2, 3 },
-            .O => .{ 1, 2, 5, 6 },
+            .L => .{
+                .{ .x = half_block, .y = half_block },
+                .{ .x = half_block, .y = -half_block },
+                .{ .x = -half_block, .y = -half_block },
+                .{ .x = -2 * half_block, .y = -half_block },
+            },
+            .P => .{
+                .{ .x = half_block, .y = -half_block },
+                .{ .x = half_block, .y = half_block },
+                .{ .x = -half_block, .y = half_block },
+                .{ .x = -2 * half_block, .y = half_block },
+            },
+            .S => .{
+                .{ .x = 0, .y = half_block },
+                .{ .x = 0, .y = -half_block },
+                .{ .x = SAND_PER_BLOCK, .y = half_block },
+                .{ .x = -SAND_PER_BLOCK, .y = -half_block },
+            },
+            .Z => .{
+                .{ .x = 0, .y = half_block },
+                .{ .x = 0, .y = -half_block },
+                .{ .x = -SAND_PER_BLOCK, .y = half_block },
+                .{ .x = SAND_PER_BLOCK, .y = -half_block },
+            },
+            .T => .{
+                .{ .x = 0, .y = half_block },
+                .{ .x = -SAND_PER_BLOCK, .y = half_block },
+                .{ .x = SAND_PER_BLOCK, .y = half_block },
+                .{ .x = 0, .y = -half_block },
+            },
+            .I => .{
+                .{ .x = 0, .y = -half_block },
+                .{ .x = 0, .y = -3 * half_block },
+                .{ .x = 0, .y = half_block },
+                .{ .x = 0, .y = 3 * half_block },
+            },
+            .O => .{
+                .{ .x = half_block, .y = half_block },
+                .{ .x = half_block, .y = -half_block },
+                .{ .x = -half_block, .y = half_block },
+                .{ .x = -half_block, .y = -half_block },
+            },
         };
     }
 };
@@ -158,12 +195,12 @@ const Rotation = enum(u8) {
             else => undefined,
         };
     }
-    fn rotate_offsets(self: Rotation, dx: isize, dy: isize) struct { isize, isize } {
+    fn rotate_offsets(self: Rotation, coord: BlockCenter) BlockCenter {
         return switch (self) {
-            .R0 => .{ dx, dy },
-            .R90 => .{ dy, dx },
-            .R180 => .{ -dx, -dy },
-            .R270 => .{ -dy, -dx },
+            .R0 => .{ .x = coord.x, .y = coord.y },
+            .R90 => .{ .x = -coord.y, .y = coord.x },
+            .R180 => .{ .x = -coord.x, .y = -coord.y },
+            .R270 => .{ .x = coord.y, .y = -coord.x },
         };
     }
     fn rotate_clockwise(self: *Rotation) void {
@@ -200,6 +237,19 @@ const Tetmino = struct {
             .column = N_SAND_COLS / 2,
         };
     }
+    // Returns the 4 block_centers that make up the tetmino.
+    fn block_centers(self: Tetmino) [4]BlockCenter {
+        var result = self.kind.block_offsets();
+        // Convert the block offsets into absolute coordinates on the sand grid.
+        for (0..4) |i| {
+            var coord = self.rotation.rotate_offsets(result[i]);
+            coord.x += self.column;
+            coord.y += self.row;
+            result[i] = coord;
+        }
+        return result;
+    }
+
     fn shift(self: *Tetmino, left: bool) void {
         self.column += if (left) -1 else 1;
         self.correct_horizontal_position();
@@ -212,47 +262,38 @@ const Tetmino = struct {
         }
         self.correct_horizontal_position();
     }
-    // Returns the top left sand-pixel coordinate of a tetris block.
-    fn block_bounds(self: Tetmino, block: u8) SandCoordinate {
-        std.debug.assert(block < 8);
-
-        var d_row: isize = if (block < 4) 0 else SAND_PER_BLOCK;
-        var d_cols: isize = @mod(block, 4) * SAND_PER_BLOCK;
-        const offsets = self.rotation.rotate_offsets(d_row, d_cols);
-        d_row = offsets[0];
-        d_cols = offsets[1];
-        const column = @as(isize, @intCast(self.column)) + d_cols;
-        const row = @as(isize, @intCast(self.row)) + d_row;
-        return .{ .row = row, .col = column };
-    }
 
     fn correct_horizontal_position(self: *Tetmino) void {
-        var beyond_right_edge: isize = 0;
-        var beyond_left_edge: isize = 0;
-        for (self.kind.blocks_filled()) |block| {
-            const column = self.block_bounds(block).col;
-            beyond_right_edge = @max(beyond_left_edge, column + SAND_PER_BLOCK - N_SAND_COLS + 1);
-            beyond_left_edge = @min(0, column);
+        var min_left: isize = 0;
+        var max_right: isize = N_SAND_COLS - 1;
+        const half_side_len = SAND_PER_BLOCK / 2;
+        for (self.block_centers()) |block_center| {
+            min_left = @min(min_left, block_center.x - half_side_len);
+            max_right = @max(max_right, block_center.x + half_side_len);
         }
         // You can only be beyond one edge at a time, logically.
-        std.debug.assert((beyond_left_edge == 0) or (beyond_right_edge == 0));
-
-        self.column -= beyond_left_edge + beyond_right_edge;
+        std.debug.assert((min_left == 0) or (max_right == N_SAND_COLS - 1));
+        if (min_left < 0) {
+            self.column -= min_left;
+        }
+        if (max_right > N_SAND_COLS - 1) {
+            self.column -= max_right - (N_SAND_COLS - 1);
+        }
     }
 
     fn draw(self: Tetmino, sdl: SdlContext) void {
-        // Decompose a TetminoKind into 8 blocks. Each is a cell.
-        for (self.kind.blocks_filled()) |block| {
-            // TODO: This would be more succinct with a Vec2 type.
-            const top_left = self.block_bounds(block);
-            const column: usize = @intCast(top_left.col);
-            const row: usize = @intCast(top_left.row);
+        const half_side_len = SAND_PER_BLOCK / 2;
+        for (self.block_centers()) |block_center| {
+            // Get the top left.
+            const x: u32 = @intCast(block_center.x - half_side_len);
+            const y: u32 = @intCast(block_center.y - half_side_len);
+            // Remap from sand-grid coordinate to pixel coordinate.
             sdl.draw_rect(Rect{
                 .color = self.color,
                 .height = SAND_PER_BLOCK * SAND_PX_SIZE,
                 .width = SAND_PER_BLOCK * SAND_PX_SIZE,
-                .x = @intCast(column * SAND_PX_SIZE + SAND_MARGIN),
-                .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * row),
+                .x = x * SAND_PX_SIZE + SAND_MARGIN,
+                .y = SCREEN_HEIGHT - SAND_MARGIN - y * SAND_PX_SIZE,
             });
         }
     }
