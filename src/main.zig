@@ -109,6 +109,18 @@ const SdlContext = struct {
     }
 };
 
+// We will union adjacent sand by color. If the union touches both
+// the left and right walls, then the sand shall disappear.
+const SandUnion = union(enum) {
+    const Extent = struct {
+        left_most: usize,
+        right_most: usize,
+    };
+
+    follower: SandIndex, // Index of the leader.
+    leader: Extent,
+};
+
 const Sand = struct { color: Color };
 
 // Possibly out of bounds coordinate in the sand grid.
@@ -275,19 +287,19 @@ const Tetmino = struct {
 
     fn correct_horizontal_position(self: *Tetmino) void {
         var min_left: isize = 0;
-        var max_right: isize = N_SAND_COLS - 1;
+        var right_most: isize = N_SAND_COLS - 1;
         const half_side_len = SAND_PER_BLOCK / 2;
         for (self.block_centers()) |block_center| {
             min_left = @min(min_left, block_center.x - half_side_len);
-            max_right = @max(max_right, block_center.x + half_side_len);
+            right_most = @max(right_most, block_center.x + half_side_len);
         }
         // You can only be beyond one edge at a time, logically.
-        std.debug.assert((min_left == 0) or (max_right == N_SAND_COLS - 1));
+        std.debug.assert((min_left == 0) or (right_most == N_SAND_COLS - 1));
         if (min_left < 0) {
             self.column -= min_left;
         }
-        if (max_right > N_SAND_COLS - 1) {
-            self.column -= max_right - (N_SAND_COLS - 1);
+        if (right_most > N_SAND_COLS - 1) {
+            self.column -= right_most - (N_SAND_COLS - 1);
         }
     }
 
@@ -322,6 +334,7 @@ const Tetmino = struct {
 
 const GameState = struct {
     sands: [N_SAND_ROWS][N_SAND_COLS]?Sand,
+    groups: [N_SAND_ROWS][N_SAND_COLS]?SandUnion,
     live_tetmino: ?Tetmino,
     rng: *std.rand.Random,
     game_over: bool,
@@ -329,6 +342,7 @@ const GameState = struct {
     fn init(rng: *std.rand.Random) GameState {
         var self = GameState{
             .sands = undefined,
+            .groups = undefined,
             .live_tetmino = null,
             .rng = rng,
             .game_over = false,
@@ -343,7 +357,17 @@ const GameState = struct {
                 }
             }
         }
+        // Initialize the undefined groups to null.
+        for (0..N_SAND_ROWS) |i| {
+            for (0..N_SAND_COLS) |j| {
+                self.groups[i][j] = null;
+            }
+        }
         return self;
+    }
+
+    fn index_group(self: *GameState, i: SandIndex) *?SandUnion {
+        self.groups[i.y][i.x];
     }
 
     fn create_tetmino(self: *GameState) void {
@@ -391,6 +415,94 @@ const GameState = struct {
                 }
             }
         }
+    }
+
+    fn compute_unions(self: *GameState) void {
+        if (self.game_over) return;
+        for (0..N_SAND_ROWS) |row| {
+            for (0..N_SAND_COLS) |col| {
+                const current = &self.sands[row][col];
+                if (current.* == null) {
+                    self.groups[row][col] = null;
+                    continue;
+                }
+                current.* = SandUnion{
+                    .leader = .{
+                        .left_most = col,
+                        .right_most = col,
+                    },
+                };
+                // Try to follow the cell below.
+                if (row > 0 and self.sands[row - 1][col] != null and current.color == self.sands[row - 1][col].*.color) {
+                    self.merge_groups(
+                        SandIndex{ .x = col, .y = row },
+                        SandIndex{ .x = col, .y = row - 1 },
+                    );
+                }
+                // Try to follow the cell to the left.
+                if (col > 0 and self.sands[row][col - 1] != null and current.color == self.sands[row][col - 1].*.color) {
+                    self.merge_groups(
+                        SandIndex{ .x = col, .y = row },
+                        SandIndex{ .x = col - 1, .y = row },
+                    );
+                }
+            }
+        }
+    }
+    // Returns the SandUnion.Extent of the group originating at coord.
+    fn join_group(
+        self: *GameState,
+        new_follower: SandCoord,
+        group_representative: SandCoord,
+    ) SandUnion.Extent {
+        // Following the union-find algorithm.
+        // First we point the new follower to the group representative, taking care
+        // to store the old group's data, the SandUnion.Extent.
+        const follower_extent = undefined;
+        const new_follower_ptr = &self.index_group(new_follower).*.?;
+        switch (new_follower_ptr.*) {
+            .follower => {
+                std.debug.panic("`join_group` expects leaders.", .{});
+            },
+            .leader => |extent| {
+                follower_extent = extent;
+            },
+        }
+        new_follower_ptr.* = SandUnion{
+            .follower = group_representative,
+        };
+        // Then follow the group representative up to the ultimate leader.
+        // Union-find is O(inverse ackerman) so the path may be stored on the stack.
+        const max_depth = 5;
+        var path_to_leader: [max_depth]?SandCoord = null;
+        path_to_leader[0] = new_follower;
+        var leader = null;
+        var max_depth_reached = 1;
+        for (1..max_depth) |i| {
+            const prev_coord = path_to_leader[i - 1].*;
+            const current = self.groups[prev_coord.row][prev_coord.col].*;
+            switch (current) {
+                .follower => |leader_coord| {
+                    path_to_leader[i] = leader_coord;
+                },
+                .leader => {
+                    leader = prev_coord;
+                    max_depth_reached = i;
+                },
+            }
+        }
+        std.debug.assert(leader != null);
+        // Update all groups along the path to point to the leader and
+        // update the leader which tracks the group's left_most and right_most
+        // coordinates.
+        const leader_data = &self.groups[leader.row][leader.col].?.leader;
+        for (0..max_depth_reached - 1) |i| {
+            const g = path_to_leader[i].*;
+            self.groups[g.row][g.col] = SandUnion{ .follower = leader.* };
+        }
+        leader_data.left_most = @min(leader_data.left_most, follower_extent.left_most);
+        leader_data.right_most = @max(leader_data.right_most, follower_extent.right_most);
+        return leader_data.*;
     }
 
     fn convert_live_tetmino_to_sand(self: *GameState) void {
