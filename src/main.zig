@@ -1,113 +1,19 @@
 const std = @import("std");
-
+const sdl = @import("sdl.zig");
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-// Milliseconds between updates.
-const UPDATE_INTERVAL = 50;
-// TODO: Separate low and high frequency input intervals, e.g. pause vs rotate.
-const INPUT_INTERVAL = 40;
-
-// Screen configuration for the main tetris board.
-const N_SAND_ROWS = 250;
-const N_SAND_COLS = 150;
-const SAND_PX_SIZE = 3;
-const SAND_MARGIN = 50;
-const SCREEN_WIDTH = SAND_MARGIN * 2 + N_SAND_COLS * SAND_PX_SIZE;
-const SCREEN_HEIGHT = SAND_MARGIN * 2 + N_SAND_ROWS * SAND_PX_SIZE;
-
-// Other configuration.
-const SAND_PER_BLOCK = 8;
-
-const Color = struct {
-    r: u8,
-    g: u8,
-    b: u8,
-
-    pub fn random(rng: *std.rand.Random) Color {
-        return Color{
-            .r = rng.int(u8),
-            .g = rng.int(u8),
-            .b = rng.int(u8),
-        };
-    }
-};
-
-const Rect = struct {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    color: Color,
-};
-
-const SdlContext = struct {
-    window: *c.SDL_Window,
-    surface: *c.SDL_Surface,
-    renderer: *c.SDL_Renderer,
-
-    pub fn init(title: [*c]const u8) SdlContext {
-        if (c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO) < 0) {
-            c.SDL_Log("Unable to initialize SDL: %s", c.SDL_GetError());
-        }
-        var self = SdlContext{
-            .window = undefined,
-            .surface = undefined,
-            .renderer = undefined,
-        };
-        const w = c.SDL_CreateWindow(
-            title,
-            c.SDL_WINDOWPOS_CENTERED,
-            c.SDL_WINDOWPOS_CENTERED,
-            SCREEN_WIDTH,
-            SCREEN_HEIGHT,
-            0,
-        );
-        if (w == null) {
-            c.SDL_Log("Failed to create window %s", c.SDL_GetError());
-        }
-        self.window = w.?;
-        self.surface = c.SDL_GetWindowSurface(self.window).?;
-        self.renderer = c.SDL_GetRenderer(self.window).?;
-        return self;
-    }
-
-    pub fn destroy(self: SdlContext) void {
-        c.SDL_DestroyWindow(self.window);
-        c.SDL_Quit();
-    }
-    pub fn clear_screen(self: SdlContext) void {
-        // TODO: Probably should check these error codes...
-        _ = c.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 128);
-        _ = c.SDL_RenderClear(self.renderer);
-    }
-    pub fn draw_rect(self: SdlContext, rect: Rect) void {
-        _ = c.SDL_SetRenderDrawColor(self.renderer, rect.color.r, rect.color.g, rect.color.b, 255);
-        const sdl_rect = c.SDL_Rect{
-            .x = @intCast(rect.x),
-            .y = @intCast(rect.y),
-            .w = @intCast(rect.width),
-            .h = @intCast(rect.height),
-        };
-        _ = c.SDL_RenderFillRect(self.renderer, &sdl_rect);
-    }
-
-    // Draws a sand cell given its coordiantes and color.
-    pub fn draw_sand(self: SdlContext, sand: SandIndex, color: Color) void {
-        self.draw_rect(Rect{
-            .x = @intCast(sand.x * SAND_PX_SIZE + SAND_MARGIN),
-            .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * sand.y),
-            .width = SAND_PX_SIZE,
-            .height = SAND_PX_SIZE,
-            .color = color,
-        });
-    }
-
-    pub fn present(self: SdlContext) void {
-        _ = c.SDL_RenderPresent(self.renderer);
-    }
-};
+const constants = @import("constants.zig");
+const UPDATE_INTERVAL = constants.UPDATE_INTERVAL;
+const INPUT_INTERVAL = constants.INPUT_INTERVAL;
+const N_SAND_ROWS = constants.N_SAND_ROWS;
+const N_SAND_COLS = constants.N_SAND_COLS;
+const SAND_PX_SIZE = constants.SAND_PX_SIZE;
+const SAND_MARGIN = constants.SAND_MARGIN;
+const SCREEN_WIDTH = constants.SCREEN_WIDTH;
+const SCREEN_HEIGHT = constants.SCREEN_HEIGHT;
+const SAND_PER_BLOCK = constants.SAND_PER_BLOCK;
 
 // We will union adjacent sand by color. If the union touches both
 // the left and right walls, then the sand shall disappear.
@@ -121,13 +27,12 @@ const SandUnion = union(enum) {
     leader: Extent,
 };
 
-const Sand = struct { color: Color };
+const Sand = struct { color: sdl.Color };
 
 // Possibly out of bounds coordinate in the sand grid.
 const SandCoord = struct { x: isize, y: isize };
 
-// In-bounds coordinates on the sand grid.
-const SandIndex = struct { x: usize, y: usize };
+const SandIndex = sdl.SandIndex;
 
 const TetminoKind = enum(u8) {
     L,
@@ -244,7 +149,7 @@ const Rotation = enum(u8) {
 const TetminoSandCoordinates = [4 * SAND_PER_BLOCK * SAND_PER_BLOCK]SandIndex;
 
 const Tetmino = struct {
-    color: Color,
+    color: sdl.Color,
     kind: TetminoKind,
     rotation: Rotation,
     column: isize,
@@ -252,7 +157,7 @@ const Tetmino = struct {
 
     fn init(rng: *std.rand.Random) Tetmino {
         return .{
-            .color = Color.random(rng),
+            .color = sdl.Color.random(rng),
             .kind = TetminoKind.random(rng),
             .rotation = Rotation.random(rng),
             .row = N_SAND_ROWS - 10,
@@ -322,12 +227,12 @@ const Tetmino = struct {
         return result;
     }
 
-    fn draw(self: Tetmino, sdl: SdlContext) void {
+    fn draw(self: Tetmino, sdl_context: sdl.SdlContext) void {
         // TODO: We could draw just 4 rectangles if we drew them at the block level instead of
         // at the sand level, however previously there was a visual stutter due to subtle
         // implementation differences, so now this function relies on `as_sand_coordinates`.
         for (self.as_sand_coordinates()) |coord| {
-            sdl.draw_sand(coord, self.color);
+            sdl_context.draw_sand(coord, self.color);
         }
     }
 };
@@ -353,7 +258,7 @@ const GameState = struct {
                 self.sands[i][j] = null;
                 if (rng.float(f32) < 0.1) {
                     // Make random sand.
-                    self.sands[i][j] = Sand{ .color = Color.random(rng) };
+                    self.sands[i][j] = Sand{ .color = sdl.Color.random(rng) };
                 }
             }
         }
@@ -557,7 +462,7 @@ const GameState = struct {
         }
     }
 
-    fn apply_controls(self: *GameState, controller: Controller) void {
+    fn apply_controls(self: *GameState, controller: sdl.Controller) void {
         if (self.game_over) {
             if (controller.pause) {
                 // Reset the game.
@@ -586,75 +491,22 @@ const GameState = struct {
         // Collision detection, etc.
     }
 
-    fn draw(self: GameState, sdl: SdlContext) void {
+    fn draw(self: GameState, sdl_context: sdl.SdlContext) void {
         if (self.live_tetmino != null) {
-            self.live_tetmino.?.draw(sdl);
+            self.live_tetmino.?.draw(sdl_context);
         }
 
         for (0..N_SAND_ROWS) |i| {
             for (0..N_SAND_COLS) |j| {
                 const sand = self.sands[i][j];
                 if (sand == null) continue;
-                sdl.draw_rect(Rect{
+                sdl_context.draw_rect(sdl.Rect{
                     .x = @intCast(j * SAND_PX_SIZE + SAND_MARGIN),
                     .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * i),
                     .width = SAND_PX_SIZE,
                     .height = SAND_PX_SIZE,
                     .color = sand.?.color,
                 });
-            }
-        }
-    }
-};
-
-const Controller = struct {
-    up: bool,
-    down: bool,
-    left: bool,
-    right: bool,
-    clockwise: bool,
-    counter_clockwise: bool,
-    pause: bool,
-    action: bool,
-    quit: bool,
-
-    fn init() Controller {
-        return Controller{
-            .up = false,
-            .down = false,
-            .left = false,
-            .right = false,
-            .clockwise = false,
-            .counter_clockwise = false,
-            .pause = false,
-            .action = false,
-            .quit = false,
-        };
-    }
-
-    fn reset(self: *Controller) void {
-        self.* = Controller.init();
-    }
-
-    fn poll_sdl_events(self: *Controller) void {
-        var event = c.SDL_Event{ .type = 0 };
-        while (c.SDL_PollEvent(&event) != 0) {
-            switch (event.type) {
-                c.SDL_QUIT => self.quit = true,
-                c.SDL_KEYDOWN => {
-                    switch (event.key.keysym.sym) {
-                        c.SDLK_w => self.up = true,
-                        c.SDLK_s => self.down = true,
-                        c.SDLK_a => self.left = true,
-                        c.SDLK_d => self.right = true,
-                        c.SDLK_LSHIFT => self.counter_clockwise = true,
-                        c.SDLK_RSHIFT => self.clockwise = true,
-                        c.SDLK_ESCAPE => self.pause = true,
-                        c.SDLK_SPACE => self.action = true,
-                        else => {},
-                    }
-                },
-                else => {},
             }
         }
     }
@@ -670,25 +522,22 @@ pub fn main() !void {
     var rand = prng.random();
 
     // Create window.
-    const sdl = SdlContext.init("Tetris Sands");
-    defer sdl.destroy();
+    const sdl_context = sdl.SdlContext.init("Tetris Sands");
+    defer sdl_context.destroy();
 
     // Initialize the game.
     var game_state = GameState.init(&rand);
-    var controller = Controller.init();
-
     var is_paused = false;
 
     // Begin the game loop.
-    var now = c.SDL_GetTicks64();
+    var now = sdl_context.get_ticks();
     var next_update_time = now;
     var next_input_time = now;
     while (true) {
-        now = c.SDL_GetTicks64();
+        now = sdl_context.get_ticks();
 
         if (now >= next_input_time) {
-            controller.poll_sdl_events();
-            defer controller.reset();
+            const controller = sdl.Controller.poll_control_inputs();
             next_input_time += INPUT_INTERVAL;
 
             if (controller.quit) break;
@@ -705,15 +554,13 @@ pub fn main() !void {
             }
         }
 
-        sdl.clear_screen();
-        game_state.draw(sdl);
-        sdl.present();
+        sdl_context.clear_screen();
+        game_state.draw(sdl_context);
+        sdl_context.present();
 
         // Sleep until next action.
-        now = c.SDL_GetTicks64();
+        now = sdl_context.get_ticks();
         const next_time = @min(next_input_time, next_update_time);
-        if (now < next_time) {
-            c.SDL_Delay(@intCast(next_time - now));
-        }
+        sdl_context.sleep_until(next_time);
     }
 }
