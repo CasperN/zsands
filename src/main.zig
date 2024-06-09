@@ -282,23 +282,13 @@ const GameState = struct {
         } else {
             self.live_tetmino = null;
         }
-        // const left = self.rng.intRangeLessThan(usize, 0, N_SAND_COLS - 10);
-        // const color = Color.random(self.rng);
-        // for (0..10) |di| {
-        //     for (0..10) |dj| {
-        //         const row = N_SAND_ROWS - 1 - di;
-        //         const col = left + dj;
-        //         self.sands[row][col] = Sand{
-        //             .color = color,
-        //         };
-        //     }
-        // }
     }
 
     fn drop_sands(self: *GameState) void {
         if (self.game_over) return;
         for (1..N_SAND_ROWS) |i| {
-            for (0..N_SAND_COLS) |j| {
+            for (0..N_SAND_COLS) |j0| {
+                const j = if (i % 2 == 0) j0 else N_SAND_COLS - 1 - j0;
                 const current_cell = &self.sands[i][j];
                 const row_below = &self.sands[i - 1];
                 // Try dropping straight down.
@@ -365,8 +355,8 @@ const GameState = struct {
     }
     fn traverse_to_group_leader(self: *GameState, i: SandIndex) SandIndex {
         // As per the union-find algorithm, we will follow `i` until we see a leader.
-        // The path length is O(inverse ackermann) so its basically constant size.
-        const max_depth = 10;
+        // the max depth is bounded more or less by the sand height.
+        const max_depth = constants.N_SAND_COLS;
         var path_to_leader: [max_depth]?SandIndex = undefined;
         for (0..max_depth) |k| path_to_leader[k] = null;
 
@@ -374,11 +364,15 @@ const GameState = struct {
         var lead_index: ?SandIndex = null;
         var max_depth_reached: usize = 1;
         for (1..max_depth) |depth| {
+            max_depth_reached = depth;
             const previous = path_to_leader[depth - 1].?;
             const current = self.groups[previous.y][previous.x];
             if (current == null) {
-                std.debug.print("Attempting to traverse to leader of {d},{d}.\n", .{ i.y, i.x });
-                std.debug.print("At depth {d}, we point to a null group at {d},{d} as leader.\n", .{ depth, previous.y, previous.x });
+                self.debug_print_state();
+                std.debug.panic(
+                    \\ Attempting to traverse to leader of {d},{d}.
+                    \\ At depth {d}, we point to a null group at {d},{d} as leader.\n
+                , .{ i.y, i.x, depth, previous.y, previous.x });
             }
             switch (current.?) {
                 .follower => |leader_coord| {
@@ -386,16 +380,25 @@ const GameState = struct {
                 },
                 .extent => {
                     lead_index = previous;
-                    max_depth_reached = depth;
+
                     break;
                 },
             }
         }
+        if (lead_index == null) {
+            self.debug_print_state();
+            std.debug.panic(
+                "Failed to traverse to leader. mdr={d} row={d}, col={d}\n",
+                .{ max_depth_reached, i.y, i.x },
+            );
+        }
+
         // Reassign everything we saw along the path directly to the leader to accelerate
         // future lookups.
         for (0..max_depth_reached - 1) |p| {
             self.index_group(path_to_leader[p].?).*.?.follower = lead_index.?;
         }
+
         return lead_index.?;
     }
 
@@ -426,6 +429,30 @@ const GameState = struct {
             self.sands[coord.y][coord.x] = Sand{ .color = self.live_tetmino.?.color };
         }
         self.live_tetmino = null;
+    }
+    fn clear_sands(self: *GameState) void {
+        if (self.game_over) return;
+        for (0..N_SAND_ROWS) |row| {
+            iter_sands: for (0..N_SAND_COLS) |col| {
+                if (self.groups[row][col] == null) continue;
+                const lead = self.traverse_to_group_leader(SandIndex{ .x = col, .y = row });
+                const extent = self.index_group(lead).*.?.extent;
+                if (extent.left_most == 0 and extent.right_most == N_SAND_COLS - 1) {
+                    for (constants.SAND_CLEAR_PROGRESSION, 0..) |death_color, i| {
+                        if (self.sands[row][col].?.color.equals(death_color)) {
+                            if (i == 0) {
+                                self.sands[row][col] = null;
+                            } else {
+                                self.sands[row][col].?.color = constants.SAND_CLEAR_PROGRESSION[i - 1];
+                            }
+                            continue :iter_sands;
+                        }
+                    }
+                    const last = constants.SAND_CLEAR_PROGRESSION.len - 1;
+                    self.sands[row][col].?.color = constants.SAND_CLEAR_PROGRESSION[last];
+                }
+            }
+        }
     }
 
     fn live_tetmino_touches_sand_or_floor(self: GameState) bool {
@@ -497,6 +524,37 @@ const GameState = struct {
         // TODO: Once against a wall you can rotate to clip out of bounds.
         // After rotating we should bring you back in bounds.
         // Collision detection, etc.
+    }
+    fn debug_print_state(self: GameState) void {
+        std.debug.print("Game state:\n", .{});
+        for (0..N_SAND_ROWS) |row| {
+            std.debug.print("----------\n", .{});
+            for (0..N_SAND_COLS) |col| {
+                const sand = self.sands[row][col];
+                const group = self.groups[row][col];
+                if (sand == null and group == null) continue;
+                std.debug.print("{d}-{d}:\t", .{ row, col });
+                if (sand == null) {
+                    std.debug.print("null\t", .{});
+                } else {
+                    const x = sand.?.color;
+                    std.debug.print("{x}{x}{x}\t", .{ x.r, x.g, x.b });
+                }
+
+                if (group == null) {
+                    std.debug.print("null\n", .{});
+                } else {
+                    switch (group.?) {
+                        .follower => |f| {
+                            std.debug.print("following({d},{d})\n", .{ f.y, f.x });
+                        },
+                        .extent => |e| {
+                            std.debug.print("LEADER of [{d},{d}] extent\n", .{ e.left_most, e.right_most });
+                        },
+                    }
+                }
+            }
+        }
     }
 
     fn draw(self: GameState, sdl_context: sdl.SdlContext) void {
@@ -573,6 +631,7 @@ pub fn main() !void {
                 game_state.drop_sands();
                 game_state.drop_tetmino();
                 game_state.compute_unions();
+                game_state.clear_sands();
             }
         }
 

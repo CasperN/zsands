@@ -100,8 +100,8 @@ pub const SdlContext = struct {
         const sdl_rect = c.SDL_Rect{
             .x = SAND_MARGIN,
             .y = SAND_MARGIN,
-            .w = SCREEN_WIDTH - 2 * SAND_MARGIN,
-            .h = SCREEN_HEIGHT - 2 * SAND_MARGIN,
+            .w = SCREEN_WIDTH - 2 * SAND_MARGIN + SAND_PX_SIZE,
+            .h = SCREEN_HEIGHT - 2 * SAND_MARGIN + SAND_PX_SIZE,
         };
         _ = c.SDL_RenderFillRect(self.renderer, &sdl_rect);
     }
