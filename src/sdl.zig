@@ -16,16 +16,29 @@ pub const Color = struct {
     b: u8,
 
     pub fn random(rng: *std.rand.Random) Color {
-        return Color{
-            .r = rng.int(u8),
-            .g = rng.int(u8),
-            .b = rng.int(u8),
+        return switch (rng.intRangeLessThan(i8, 0, 5)) {
+            0 => .{ .r = 0x03, .g = 0x41, .b = 0xAE },
+            1 => .{ .r = 0x48, .g = 0x89, .b = 0x23 },
+            2 => .{ .r = 0xFF, .g = 0xD5, .b = 0x00 },
+            3 => .{ .r = 0xFF, .g = 0x97, .b = 0x1C },
+            4 => .{ .r = 0xBA, .g = 0x1C, .b = 0x04 },
+            else => unreachable,
         };
+    }
+    pub fn equals(self: Color, other: Color) bool {
+        return (self.r == other.r and self.g == other.g and self.b == other.b);
     }
 };
 
 // In-bounds coordinates on the sand grid.
-pub const SandIndex = struct { x: usize, y: usize };
+pub const SandIndex = struct {
+    x: usize,
+    y: usize,
+
+    pub fn equals(self: SandIndex, other: SandIndex) bool {
+        return self.x == other.x and self.y == other.y;
+    }
+};
 
 pub const Rect = struct {
     x: u32,
@@ -34,6 +47,13 @@ pub const Rect = struct {
     height: u32,
     color: Color,
 };
+
+fn to_screen_coordinates(sand: SandIndex) struct { x: c_int, y: c_int } {
+    return .{
+        .x = @intCast(sand.x * SAND_PX_SIZE + SAND_MARGIN),
+        .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * sand.y),
+    };
+}
 
 pub const SdlContext = struct {
     window: *c.SDL_Window,
@@ -72,29 +92,30 @@ pub const SdlContext = struct {
     }
     pub fn clear_screen(self: SdlContext) void {
         // TODO: Probably should check these error codes...
-        _ = c.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 128);
+        _ = c.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
         _ = c.SDL_RenderClear(self.renderer);
-    }
-    pub fn draw_rect(self: SdlContext, rect: Rect) void {
-        _ = c.SDL_SetRenderDrawColor(self.renderer, rect.color.r, rect.color.g, rect.color.b, 255);
-        const sdl_rect = c.SDL_Rect{
-            .x = @intCast(rect.x),
-            .y = @intCast(rect.y),
-            .w = @intCast(rect.width),
-            .h = @intCast(rect.height),
-        };
-        _ = c.SDL_RenderFillRect(self.renderer, &sdl_rect);
     }
 
     // Draws a sand cell given its coordiantes and color.
     pub fn draw_sand(self: SdlContext, sand: SandIndex, color: Color) void {
-        self.draw_rect(Rect{
-            .x = @intCast(sand.x * SAND_PX_SIZE + SAND_MARGIN),
-            .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * sand.y),
-            .width = SAND_PX_SIZE,
-            .height = SAND_PX_SIZE,
-            .color = color,
-        });
+        const p = to_screen_coordinates(sand);
+        _ = c.SDL_SetRenderDrawColor(self.renderer, color.r, color.g, color.b, 255);
+        const sdl_rect = c.SDL_Rect{
+            .x = p.x,
+            .y = p.y,
+            .w = SAND_PX_SIZE,
+            .h = SAND_PX_SIZE,
+        };
+        _ = c.SDL_RenderFillRect(self.renderer, &sdl_rect);
+    }
+
+    pub fn draw_line(self: SdlContext, a: SandIndex, b: SandIndex) void {
+        var err = c.SDL_SetRenderDrawColor(self.renderer, 255, 255, 255, 255);
+        std.debug.assert(err == 0);
+        const p1 = to_screen_coordinates(a);
+        const p2 = to_screen_coordinates(b);
+        err = c.SDL_RenderDrawLine(self.renderer, p1.x, p1.y, p2.x, p2.y);
+        std.debug.assert(err == 0);
     }
 
     pub fn present(self: SdlContext) void {
@@ -120,6 +141,7 @@ pub const Controller = struct {
     right: bool,
     clockwise: bool,
     counter_clockwise: bool,
+    show_groups: bool,
     pause: bool,
     action: bool,
     quit: bool,
@@ -132,6 +154,7 @@ pub const Controller = struct {
             .right = false,
             .clockwise = false,
             .counter_clockwise = false,
+            .show_groups = false,
             .pause = false,
             .action = false,
             .quit = false,
@@ -146,6 +169,7 @@ pub const Controller = struct {
                         c.SDLK_s => self.down = true,
                         c.SDLK_a => self.left = true,
                         c.SDLK_d => self.right = true,
+                        c.SDLK_F4 => self.show_groups = true,
                         c.SDLK_LSHIFT => self.counter_clockwise = true,
                         c.SDLK_RSHIFT => self.clockwise = true,
                         c.SDLK_ESCAPE => self.pause = true,
