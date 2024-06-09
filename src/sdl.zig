@@ -40,14 +40,6 @@ pub const SandIndex = struct {
     }
 };
 
-pub const Rect = struct {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    color: Color,
-};
-
 fn to_screen_coordinates(sand: SandIndex) struct { x: c_int, y: c_int } {
     return .{
         .x = @intCast(sand.x * SAND_PX_SIZE + SAND_MARGIN),
@@ -120,12 +112,31 @@ pub const SdlContext = struct {
     }
 
     pub fn draw_line(self: SdlContext, a: SandIndex, b: SandIndex) void {
-        var err = c.SDL_SetRenderDrawColor(self.renderer, 255, 255, 255, 255);
+        var err = c.SDL_SetRenderDrawBlendMode(
+            self.renderer,
+            c.SDL_BLENDMODE_BLEND,
+        );
+        std.debug.assert(err == 0);
+        err = c.SDL_SetRenderDrawColor(self.renderer, 255, 255, 255, 55);
         std.debug.assert(err == 0);
         const p1 = to_screen_coordinates(a);
         const p2 = to_screen_coordinates(b);
         err = c.SDL_RenderDrawLine(self.renderer, p1.x, p1.y, p2.x, p2.y);
         std.debug.assert(err == 0);
+    }
+    pub fn draw_pause_overlay(self: SdlContext) void {
+        _ = c.SDL_SetRenderDrawBlendMode(
+            self.renderer,
+            c.SDL_BLENDMODE_BLEND,
+        );
+        _ = c.SDL_SetRenderDrawColor(self.renderer, 100, 100, 100, 128);
+        const rect = c.SDL_Rect{
+            .x = 0,
+            .y = 0,
+            .w = SCREEN_WIDTH,
+            .h = SCREEN_HEIGHT,
+        };
+        _ = c.SDL_RenderDrawRect(self.renderer, &rect);
     }
 
     pub fn present(self: SdlContext) void {
