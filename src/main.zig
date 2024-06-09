@@ -493,7 +493,6 @@ const GameState = struct {
             if (controller.clockwise != controller.counter_clockwise) {
                 tetmino.rotate(controller.clockwise);
             }
-            self.drop_tetmino();
         }
         // TODO: Once against a wall you can rotate to clip out of bounds.
         // After rotating we should bring you back in bounds.
@@ -572,11 +571,13 @@ pub fn main() !void {
 
             if (!is_paused) {
                 game_state.drop_sands();
+                game_state.drop_tetmino();
                 game_state.compute_unions();
             }
         }
 
         sdl_context.clear_screen();
+        sdl_context.draw_board();
         game_state.draw(sdl_context);
         sdl_context.present();
 

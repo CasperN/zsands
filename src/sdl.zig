@@ -95,6 +95,16 @@ pub const SdlContext = struct {
         _ = c.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
         _ = c.SDL_RenderClear(self.renderer);
     }
+    pub fn draw_board(self: SdlContext) void {
+        _ = c.SDL_SetRenderDrawColor(self.renderer, 10, 10, 10, 255);
+        const sdl_rect = c.SDL_Rect{
+            .x = SAND_MARGIN,
+            .y = SAND_MARGIN,
+            .w = SCREEN_WIDTH - 2 * SAND_MARGIN,
+            .h = SCREEN_HEIGHT - 2 * SAND_MARGIN,
+        };
+        _ = c.SDL_RenderFillRect(self.renderer, &sdl_rect);
+    }
 
     // Draws a sand cell given its coordiantes and color.
     pub fn draw_sand(self: SdlContext, sand: SandIndex, color: Color) void {
