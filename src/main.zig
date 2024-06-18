@@ -3,11 +3,8 @@ const sdl = @import("sdl.zig");
 const constants = @import("constants.zig");
 const t = @import("tetmino.zig");
 
-const UPDATE_INTERVAL = constants.UPDATE_INTERVAL;
-const INPUT_INTERVAL = constants.INPUT_INTERVAL;
 const N_SAND_ROWS = constants.N_SAND_ROWS;
 const N_SAND_COLS = constants.N_SAND_COLS;
-const SAND_PER_BLOCK = constants.SAND_PER_BLOCK;
 
 // We will union adjacent sand by color. If the union touches both
 // the left and right walls, then the sand shall disappear.
@@ -31,7 +28,6 @@ const GameState = struct {
     groups: [N_SAND_ROWS][N_SAND_COLS]?Group,
     live_tetmino: ?t.Tetmino,
     rng: *std.rand.Random,
-    game_over: bool,
     show_groups: bool,
 
     fn init(rng: *std.rand.Random) GameState {
@@ -41,7 +37,6 @@ const GameState = struct {
             .live_tetmino = null,
             .rng = rng,
             .show_groups = false,
-            .game_over = false,
         };
         // Initialize the undefined sands to null.
         for (0..N_SAND_ROWS) |i| {
@@ -63,15 +58,11 @@ const GameState = struct {
     }
 
     fn create_tetmino(self: *GameState) void {
-        if (self.live_tetmino == null) {
-            self.live_tetmino = t.Tetmino.init(self.rng);
-        } else {
-            self.live_tetmino = null;
-        }
+        std.debug.assert(self.live_tetmino == null);
+        self.live_tetmino = t.Tetmino.init(self.rng);
     }
 
     fn drop_sands(self: *GameState) void {
-        if (self.game_over) return;
         for (1..N_SAND_ROWS) |i| {
             for (0..N_SAND_COLS) |j0| {
                 const j = if (i % 2 == 0) j0 else N_SAND_COLS - 1 - j0;
@@ -100,7 +91,6 @@ const GameState = struct {
     }
 
     fn compute_unions(self: *GameState) void {
-        if (self.game_over) return;
         for (0..N_SAND_ROWS) |row| {
             for (0..N_SAND_COLS) |col| {
                 // If the cell is empty of sand, then its part of no group.
@@ -207,7 +197,6 @@ const GameState = struct {
         std.debug.assert(self.live_tetmino != null);
         for (self.live_tetmino.?.as_sand_coordinates()) |coord| {
             if (coord.y >= N_SAND_ROWS) {
-                self.game_over = true;
                 return;
             }
 
@@ -216,7 +205,6 @@ const GameState = struct {
         self.live_tetmino = null;
     }
     fn clear_sands(self: *GameState) void {
-        if (self.game_over) return;
         for (0..N_SAND_ROWS) |row| {
             iter_sands: for (0..N_SAND_COLS) |col| {
                 if (self.groups[row][col] == null) continue;
@@ -247,7 +235,7 @@ const GameState = struct {
         const tetmino = self.live_tetmino.?;
         for (tetmino.block_centers()) |coord| {
             // Consider the outline of a block, 1 sand cell beyond the edge.
-            const outline_dist: isize = SAND_PER_BLOCK / 2 + 1;
+            const outline_dist: isize = constants.SAND_PER_BLOCK / 2 + 1;
             const left: usize = @intCast(@max(coord.x - outline_dist, 0));
             const right: usize = @intCast(@min(coord.x + outline_dist, N_SAND_COLS - 1));
             const bottom: usize = @intCast(@max(coord.y - outline_dist, 0));
@@ -272,30 +260,21 @@ const GameState = struct {
         return false;
     }
 
-    fn drop_tetmino(self: *GameState) void {
-        if (self.live_tetmino == null) return;
+    // Drops the tetmino by 1 line and returns whether it just hit the floor or sand.
+    fn drop_tetmino(self: *GameState) bool {
+        if (self.live_tetmino == null) return false;
         const tetmino = &self.live_tetmino.?;
         tetmino.row -= 1;
         if (self.live_tetmino_touches_sand_or_floor()) {
-            return self.convert_live_tetmino_to_sand();
+            self.convert_live_tetmino_to_sand();
+            return true;
         }
+        return false;
     }
 
     fn apply_controls(self: *GameState, controller: sdl.Controller) void {
         if (controller.show_groups) {
             self.show_groups = !self.show_groups;
-        }
-
-        if (self.game_over) {
-            if (controller.pause) {
-                // Reset the game.
-                self.* = GameState.init(self.rng);
-            }
-            return;
-        }
-
-        if (controller.action) {
-            self.create_tetmino();
         }
         // Control the live tetmino.
         if (self.live_tetmino != null) {
@@ -401,34 +380,49 @@ pub fn main() !void {
     var is_paused = false;
 
     // Begin the game loop.
+    var game_over = false;
     var now = sdl_context.get_ticks();
     var next_update_time = now;
     var next_input_time = now;
+    var next_tetmino_time = now;
+    var last_tetmino_creation_time = now - 1 - constants.MIN_TETMINO_LIFE;
     while (true) {
         now = sdl_context.get_ticks();
 
         if (now >= next_input_time) {
             const controller = sdl.Controller.poll_control_inputs();
-            next_input_time += INPUT_INTERVAL;
-
+            next_input_time = now + constants.INPUT_INTERVAL;
             if (controller.quit) break;
+            if (game_over and controller.pause) {
+                game_state = GameState.init(&rand);
+                game_over = false;
+            }
             if (controller.pause) is_paused = !is_paused;
             if (!is_paused) {
                 game_state.apply_controls(controller);
             }
         }
+        if (game_state.live_tetmino == null and now >= next_tetmino_time) {
+            game_state.create_tetmino();
+            last_tetmino_creation_time = now;
+        }
 
         if (now >= next_update_time) {
-            next_update_time += UPDATE_INTERVAL;
+            next_update_time = now + constants.UPDATE_INTERVAL;
 
-            if (!is_paused) {
+            if (!is_paused and !game_over) {
                 game_state.drop_sands();
-                game_state.drop_tetmino();
+                if (game_state.drop_tetmino()) {
+                    if (last_tetmino_creation_time + constants.MIN_TETMINO_LIFE > now) {
+                        game_over = true;
+                        continue;
+                    }
+                    next_tetmino_time = now + constants.SPAWN_DELAY;
+                }
                 game_state.compute_unions();
                 game_state.clear_sands();
             }
         }
-
         sdl_context.clear_screen();
         sdl_context.draw_board();
         game_state.draw(sdl_context);

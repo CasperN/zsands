@@ -16,12 +16,12 @@ pub const Color = struct {
     b: u8,
 
     pub fn random(rng: *std.rand.Random) Color {
-        return switch (rng.intRangeLessThan(i8, 0, 5)) {
+        return switch (rng.intRangeLessThan(i8, 0, 4)) {
             0 => .{ .r = 0x03, .g = 0x41, .b = 0xAE },
             1 => .{ .r = 0x48, .g = 0x89, .b = 0x23 },
             2 => .{ .r = 0xFF, .g = 0xD5, .b = 0x00 },
             3 => .{ .r = 0xFF, .g = 0x97, .b = 0x1C },
-            4 => .{ .r = 0xBA, .g = 0x1C, .b = 0x04 },
+            // 4 => .{ .r = 0xBA, .g = 0x1C, .b = 0x04 },
             else => unreachable,
         };
     }
@@ -41,6 +41,7 @@ pub const SandIndex = struct {
 };
 
 fn to_screen_coordinates(sand: SandIndex) struct { x: c_int, y: c_int } {
+    // std.debug.print("{d} {d} {d}", .{ sand.x, SAND_PX_SIZE, SAND_MARGIN });
     return .{
         .x = @intCast(sand.x * SAND_PX_SIZE + SAND_MARGIN),
         .y = @intCast(SCREEN_HEIGHT - SAND_MARGIN - SAND_PX_SIZE * sand.y),
